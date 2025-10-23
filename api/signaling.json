@@ -1,0 +1,188 @@
+import { WebSocketServer } from 'ws';
+
+// Almacenamiento en memoria (en producción usar Redis)
+const activeConnections = new Map();
+const nodeRooms = new Map();
+
+export default function handler(request, response) {
+  // Esta función se ejecuta cuando Vercel recibe una petición HTTP
+  // Para WebSockets, Vercel maneja la upgrade automáticamente
+  
+  if (request.method === 'GET') {
+    response.status(200).json({
+      status: 'plethorix-signaling-server',
+      version: '1.0.0',
+      activeConnections: activeConnections.size,
+      message: 'WebSocket server ready for Plethorix-P2P connections'
+    });
+  } else {
+    response.status(405).json({ error: 'Method not allowed' });
+  }
+}
+
+// WebSocket Server (Vercel maneja esto automáticamente)
+if (typeof WebSocketServer !== 'undefined') {
+  const wss = new WebSocketServer({ noServer: true });
+  
+  wss.on('connection', function connection(ws, request) {
+    const nodeId = generatePlethorixId();
+    const nodeInfo = {
+      id: nodeId,
+      ws: ws,
+      joinedAt: new Date(),
+      isBootstrap: false,
+      bootstrapScore: 0,
+      knownPeers: new Set()
+    };
+    
+    console.log(`🔗 Nuevo nodo conectado: ${nodeId}`);
+    
+    // Guardar conexión
+    activeConnections.set(nodeId, nodeInfo);
+    
+    // Enviar mensaje de bienvenida con ID asignado
+    ws.send(JSON.stringify({
+      type: 'welcome',
+      nodeId: nodeId,
+      timestamp: Date.now(),
+      message: 'Bienvenido a Plethorix-P2P'
+    }));
+    
+    // Notificar a otros nodos sobre nuevo miembro
+    broadcastToAll({
+      type: 'node-joined',
+      nodeId: nodeId,
+      timestamp: Date.now()
+    }, nodeId);
+    
+    // Enviar lista de nodos activos
+    const activeNodes = Array.from(activeConnections.keys())
+      .filter(id => id !== nodeId);
+    
+    if (activeNodes.length > 0) {
+      ws.send(JSON.stringify({
+        type: 'peer-list',
+        peers: activeNodes,
+        timestamp: Date.now()
+      }));
+    }
+    
+    ws.on('message', function message(data) {
+      try {
+        const message = JSON.parse(data.toString());
+        handleClientMessage(nodeId, message, ws);
+      } catch (error) {
+        console.error('Error parsing message:', error);
+      }
+    });
+    
+    ws.on('close', function close() {
+      console.log(`🔌 Nodo desconectado: ${nodeId}`);
+      activeConnections.delete(nodeId);
+      
+      // Notificar a otros nodos
+      broadcastToAll({
+        type: 'node-left',
+        nodeId: nodeId,
+        timestamp: Date.now()
+      });
+    });
+    
+    ws.on('error', function error(err) {
+      console.error(`❌ Error en conexión ${nodeId}:`, err);
+    });
+  });
+  
+  // Manejar upgrade de HTTP a WebSocket
+  if (typeof module !== 'undefined' && module.exports) {
+    module.exports = (req, res) => {
+      if (req.method === 'GET') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          status: 'plethorix-signaling-server',
+          connections: activeConnections.size
+        }));
+      }
+    };
+  }
+}
+
+function generatePlethorixId() {
+  const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
+  let randomId = '';
+  for (let i = 0; i < 8; i++) {
+    randomId += chars.charAt(Math.floor(Math.random() * chars.length));
+  }
+  return `Plethorix-${randomId}`;
+}
+
+function handleClientMessage(nodeId, message, ws) {
+  console.log(`📨 Mensaje de ${nodeId}:`, message.type);
+  
+  switch (message.type) {
+    case 'signal':
+      // Reenviar señal WebRTC a nodo destino
+      if (message.to && activeConnections.has(message.to)) {
+        const targetWs = activeConnections.get(message.to).ws;
+        targetWs.send(JSON.stringify({
+          type: 'signal',
+          from: nodeId,
+          signal: message.signal,
+          timestamp: Date.now()
+        }));
+      }
+      break;
+      
+    case 'broadcast':
+      // Broadcast a todos los nodos
+      broadcastToAll({
+        type: 'broadcast',
+        from: nodeId,
+        data: message.data,
+        timestamp: Date.now()
+      }, nodeId);
+      break;
+      
+    case 'bootstrap-announcement':
+      // Anunciar como bootstrap
+      activeConnections.get(nodeId).isBootstrap = true;
+      activeConnections.get(nodeId).bootstrapScore = message.score || 0;
+      
+      broadcastToAll({
+        type: 'bootstrap-announcement',
+        bootstrapId: nodeId,
+        bootstrapScore: message.score || 0,
+        timestamp: Date.now()
+      }, nodeId);
+      break;
+      
+    case 'peer-discovery':
+      // Solicitar descubrimiento de pares
+      const activeNodes = Array.from(activeConnections.keys())
+        .filter(id => id !== nodeId);
+      
+      ws.send(JSON.stringify({
+        type: 'peer-list',
+        peers: activeNodes,
+        timestamp: Date.now()
+      }));
+      break;
+      
+    case 'ping':
+      // Responder ping
+      ws.send(JSON.stringify({
+        type: 'pong',
+        timestamp: Date.now(),
+        original: message.timestamp
+      }));
+      break;
+  }
+}
+
+function broadcastToAll(message, excludeNodeId = null) {
+  activeConnections.forEach((nodeInfo, nodeId) => {
+    if (nodeId !== excludeNodeId && nodeInfo.ws.readyState === 1) { // 1 = OPEN
+      nodeInfo.ws.send(JSON.stringify(message));
+    }
+  });
+}
