@@ -1,9 +1,0 @@
-{
-  "name": "plethorix-signaling-server",
-  "version": "1.0.0", 
-  "description": "Serverless signaling server for Plethorix-P2P",
-  "type": "module",
-  "engines": {
-    "node": ">=18"
-  }
-}
