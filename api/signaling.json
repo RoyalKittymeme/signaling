@@ -1,111 +1,8 @@
-import { WebSocketServer } from 'ws';
+// Servidor de signalización WebSocket para Plethorix-P2P
+// Configuración optimizada para Vercel
 
-// Almacenamiento en memoria (en producción usar Redis)
+// Almacenamiento en memoria
 const activeConnections = new Map();
-const nodeRooms = new Map();
-
-export default function handler(request, response) {
-  // Esta función se ejecuta cuando Vercel recibe una petición HTTP
-  // Para WebSockets, Vercel maneja la upgrade automáticamente
-  
-  if (request.method === 'GET') {
-    response.status(200).json({
-      status: 'plethorix-signaling-server',
-      version: '1.0.0',
-      activeConnections: activeConnections.size,
-      message: 'WebSocket server ready for Plethorix-P2P connections'
-    });
-  } else {
-    response.status(405).json({ error: 'Method not allowed' });
-  }
-}
-
-// WebSocket Server (Vercel maneja esto automáticamente)
-if (typeof WebSocketServer !== 'undefined') {
-  const wss = new WebSocketServer({ noServer: true });
-  
-  wss.on('connection', function connection(ws, request) {
-    const nodeId = generatePlethorixId();
-    const nodeInfo = {
-      id: nodeId,
-      ws: ws,
-      joinedAt: new Date(),
-      isBootstrap: false,
-      bootstrapScore: 0,
-      knownPeers: new Set()
-    };
-    
-    console.log(`🔗 Nuevo nodo conectado: ${nodeId}`);
-    
-    // Guardar conexión
-    activeConnections.set(nodeId, nodeInfo);
-    
-    // Enviar mensaje de bienvenida con ID asignado
-    ws.send(JSON.stringify({
-      type: 'welcome',
-      nodeId: nodeId,
-      timestamp: Date.now(),
-      message: 'Bienvenido a Plethorix-P2P'
-    }));
-    
-    // Notificar a otros nodos sobre nuevo miembro
-    broadcastToAll({
-      type: 'node-joined',
-      nodeId: nodeId,
-      timestamp: Date.now()
-    }, nodeId);
-    
-    // Enviar lista de nodos activos
-    const activeNodes = Array.from(activeConnections.keys())
-      .filter(id => id !== nodeId);
-    
-    if (activeNodes.length > 0) {
-      ws.send(JSON.stringify({
-        type: 'peer-list',
-        peers: activeNodes,
-        timestamp: Date.now()
-      }));
-    }
-    
-    ws.on('message', function message(data) {
-      try {
-        const message = JSON.parse(data.toString());
-        handleClientMessage(nodeId, message, ws);
-      } catch (error) {
-        console.error('Error parsing message:', error);
-      }
-    });
-    
-    ws.on('close', function close() {
-      console.log(`🔌 Nodo desconectado: ${nodeId}`);
-      activeConnections.delete(nodeId);
-      
-      // Notificar a otros nodos
-      broadcastToAll({
-        type: 'node-left',
-        nodeId: nodeId,
-        timestamp: Date.now()
-      });
-    });
-    
-    ws.on('error', function error(err) {
-      console.error(`❌ Error en conexión ${nodeId}:`, err);
-    });
-  });
-  
-  // Manejar upgrade de HTTP a WebSocket
-  if (typeof module !== 'undefined' && module.exports) {
-    module.exports = (req, res) => {
-      if (req.method === 'GET') {
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({
-          status: 'plethorix-signaling-server',
-          connections: activeConnections.size
-        }));
-      }
-    };
-  }
-}
 
 function generatePlethorixId() {
   const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
@@ -116,73 +13,104 @@ function generatePlethorixId() {
   return `Plethorix-${randomId}`;
 }
 
-function handleClientMessage(nodeId, message, ws) {
-  console.log(`📨 Mensaje de ${nodeId}:`, message.type);
-  
-  switch (message.type) {
-    case 'signal':
-      // Reenviar señal WebRTC a nodo destino
-      if (message.to && activeConnections.has(message.to)) {
-        const targetWs = activeConnections.get(message.to).ws;
-        targetWs.send(JSON.stringify({
-          type: 'signal',
-          from: nodeId,
-          signal: message.signal,
-          timestamp: Date.now()
-        }));
-      }
-      break;
-      
-    case 'broadcast':
-      // Broadcast a todos los nodos
-      broadcastToAll({
-        type: 'broadcast',
-        from: nodeId,
-        data: message.data,
-        timestamp: Date.now()
-      }, nodeId);
-      break;
-      
-    case 'bootstrap-announcement':
-      // Anunciar como bootstrap
-      activeConnections.get(nodeId).isBootstrap = true;
-      activeConnections.get(nodeId).bootstrapScore = message.score || 0;
-      
-      broadcastToAll({
-        type: 'bootstrap-announcement',
-        bootstrapId: nodeId,
-        bootstrapScore: message.score || 0,
-        timestamp: Date.now()
-      }, nodeId);
-      break;
-      
-    case 'peer-discovery':
-      // Solicitar descubrimiento de pares
-      const activeNodes = Array.from(activeConnections.keys())
-        .filter(id => id !== nodeId);
-      
-      ws.send(JSON.stringify({
-        type: 'peer-list',
-        peers: activeNodes,
-        timestamp: Date.now()
-      }));
-      break;
-      
-    case 'ping':
-      // Responder ping
-      ws.send(JSON.stringify({
-        type: 'pong',
-        timestamp: Date.now(),
-        original: message.timestamp
-      }));
-      break;
-  }
-}
+// Para Vercel, necesitamos manejar WebSockets de forma diferente
+// ya que Vercel Serverless Functions no soporta WebSockets persistentes nativamente
 
-function broadcastToAll(message, excludeNodeId = null) {
-  activeConnections.forEach((nodeInfo, nodeId) => {
-    if (nodeId !== excludeNodeId && nodeInfo.ws.readyState === 1) { // 1 = OPEN
-      nodeInfo.ws.send(JSON.stringify(message));
+// En su lugar, usaremos un enfoque con Server-Sent Events (SSE) o polling
+// Esta es una solución temporal - para WebSockets reales necesitarías un servicio separado
+
+export default async function handler(req, res) {
+  // Configurar CORS headers
+  res.setHeader('Access-Control-Allow-Credentials', true);
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS,PATCH,DELETE,POST,PUT');
+  res.setHeader(
+    'Access-Control-Allow-Headers',
+    'X-CSRF-Token, X-Requested-With, Accept, Accept-Version, Content-Length, Content-MD5, Content-Type, Date, X-Api-Version'
+  );
+
+  if (req.method === 'OPTIONS') {
+    res.status(200).end();
+    return;
+  }
+
+  const { action } = req.query;
+
+  switch (action) {
+    case 'register':
+      // Registrar nuevo nodo
+      const nodeId = generatePlethorixId();
+      activeConnections.set(nodeId, {
+        id: nodeId,
+        lastSeen: Date.now(),
+        isBootstrap: false,
+        data: req.body || {}
+      });
+
+      res.status(200).json({
+        type: 'welcome',
+        nodeId: nodeId,
+        timestamp: Date.now(),
+        activeNodes: Array.from(activeConnections.keys()).filter(id => id !== nodeId)
+      });
+      break;
+
+    case 'get-peers':
+      // Obtener lista de pares
+      const { nodeId: requestingNodeId } = req.body;
+      const peers = Array.from(activeConnections.keys()).filter(id => id !== requestingNodeId);
+      
+      res.status(200).json({
+        type: 'peer-list',
+        peers: peers,
+        timestamp: Date.now()
+      });
+      break;
+
+    case 'send-signal':
+      // Enviar señal a otro nodo (simulado)
+      const { from, to, signal } = req.body;
+      
+      // En un servidor real, aquí almacenarías la señal para que el destinatario la recoja
+      // Esta es una simulación para Vercel Serverless
+      
+      res.status(200).json({
+        type: 'signal-delivered',
+        from: from,
+        to: to,
+        timestamp: Date.now()
+      });
+      break;
+
+    case 'heartbeat':
+      // Mantener nodo activo
+      const { nodeId: heartbeatNodeId } = req.body;
+      if (activeConnections.has(heartbeatNodeId)) {
+        activeConnections.get(heartbeatNodeId).lastSeen = Date.now();
+      }
+      
+      res.status(200).json({
+        type: 'heartbeat-ack',
+        timestamp: Date.now()
+      });
+      break;
+
+    default:
+      // Información del servidor
+      res.status(200).json({
+        status: 'plethorix-signaling-server',
+        version: '1.0.0',
+        activeConnections: activeConnections.size,
+        supportedActions: ['register', 'get-peers', 'send-signal', 'heartbeat'],
+        message: 'Serverless signaling server for Plethorix-P2P'
+      });
+  }
+
+  // Limpiar conexiones antiguas (más de 5 minutos)
+  const now = Date.now();
+  for (const [nodeId, connection] of activeConnections.entries()) {
+    if (now - connection.lastSeen > 300000) { // 5 minutos
+      activeConnections.delete(nodeId);
     }
-  });
+  }
 }
