@@ -1,0 +1,17 @@
+{
+  "name": "plethorix-signaling-server",
+  "version": "1.0.0",
+  "description": "Servidor WebSocket para Plethorix-P2P con IDs Plethorix-xxxxxxxx",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "dependencies": {
+    "ws": "^8.14.2"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
